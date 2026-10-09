@@ -38,3 +38,18 @@ class WorkflowMetrics:
             "replans": self.replans,
             "task_failures": self.task_failures,
         }
+
+    def record_event(self, event: dict) -> None:
+        event_type = event.get("event")
+
+        if event_type == "TASK_FAILED":
+            self.task_failures += 1
+
+        elif event_type == "TASK_RETRY":
+            self.retries += 1
+
+        elif event_type == "WORKFLOW_ROLLBACK":
+            self.rollbacks += 1
+
+        elif event_type == "WORKFLOW_REPLANNED":
+            self.replans += 1

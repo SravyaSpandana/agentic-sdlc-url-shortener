@@ -15,6 +15,7 @@ from orchestrator.state import (
 from orchestrator.approval import ApprovalManager
 from orchestrator.policy import PolicyDecision, PolicyGuard
 from orchestrator.replanner import Replanner
+from orchestrator.metrics import WorkflowMetrics
 
 class WorkflowExecutor:
 
@@ -27,6 +28,7 @@ class WorkflowExecutor:
         approval_manager: ApprovalManager | None = None,
         policy_guard: PolicyGuard | None = None,
         replanner: Replanner | None = None,
+        metrics: WorkflowMetrics | None = None,
     ):
         self.graph = graph
         self.agents = agents
@@ -46,6 +48,7 @@ class WorkflowExecutor:
 
         self.policy_guard = policy_guard or PolicyGuard()
         self.replanner = replanner or Replanner()
+        self.metrics = metrics or WorkflowMetrics()
 
     async def execute(self, state: WorkflowState) -> WorkflowState:
         self.graph.validate()
@@ -186,6 +189,8 @@ class WorkflowExecutor:
     # ----------------------------------------------------------
         state.status = WorkflowStatus.COMPLETED
 
+        self.metrics.finish(state.status.value)
+
         return state
 
     async def replan_and_resume(
@@ -290,6 +295,8 @@ class WorkflowExecutor:
                     state=state,
                 )
 
+                self.metrics.record_event(state.audit_events[-1])
+
                 if (
                     classification.failure_type
                     == FailureType.TRANSIENT
@@ -308,6 +315,15 @@ class WorkflowExecutor:
                         state.status = (
                             WorkflowStatus.RETRYING
                         )
+
+                        state.audit_events.append(
+                            {
+                                "event": "TASK_RETRY",
+                                "task_id": task.task_id,
+                                "retry_count": retry_count,
+                            }
+                        )
+                        self.metrics.record_event(state.audit_events[-1])
 
                         continue
 
@@ -346,20 +362,18 @@ class WorkflowExecutor:
 
                 raise
 
+
     @staticmethod
     def _record_failure(
         task_id: str,
         classification: Any,
         state: WorkflowState,
     ) -> None:
-
         state.audit_events.append(
             {
                 "event": "TASK_FAILED",
                 "task_id": task_id,
-                "failure_type": (
-                    classification.failure_type.value
-                ),
+                "failure_type": classification.failure_type.value,
                 "reason": classification.reason,
             }
         )

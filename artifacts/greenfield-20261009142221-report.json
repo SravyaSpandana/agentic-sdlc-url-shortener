@@ -1,0 +1,92 @@
+{
+  "workflow_id": "greenfield-20261009142221",
+  "requirement": "Build a URL shortener from scratch with URL creation, redirection, expiration, analytics, and automated tests.",
+  "status": "COMPLETED",
+  "generated_at": "2026-10-09T14:22:24.308463+00:00",
+  "assumptions": [],
+  "decisions": [],
+  "tasks": [
+    {
+      "task_id": "requirements",
+      "status": "COMPLETED",
+      "artifact": {
+        "type": "requirements",
+        "summary": "Build a URL shortener from scratch with URL creation, redirection, expiration, analytics, and automated tests."
+      }
+    },
+    {
+      "task_id": "architecture",
+      "status": "COMPLETED",
+      "artifact": {
+        "type": "architecture",
+        "components": [
+          "FastAPI",
+          "URL Service",
+          "Repository",
+          "SQLite"
+        ]
+      }
+    },
+    {
+      "task_id": "security",
+      "status": "COMPLETED",
+      "artifact": {
+        "type": "security-review",
+        "status": "PASS"
+      }
+    },
+    {
+      "task_id": "implementation",
+      "status": "COMPLETED",
+      "artifact": {
+        "type": "implementation",
+        "status": "COMPLETED"
+      }
+    },
+    {
+      "task_id": "tests",
+      "status": "COMPLETED",
+      "artifact": {
+        "type": "test-results",
+        "status": "PASS"
+      }
+    }
+  ],
+  "approvals": [
+    {
+      "task_id": "implementation",
+      "reason": "Approve implementation before execution",
+      "status": "APPROVED",
+      "approver": "cli-user"
+    }
+  ],
+  "audit_events": [
+    {
+      "event": "APPROVAL_REQUESTED",
+      "task_id": "implementation",
+      "reason": "Approve implementation before execution"
+    },
+    {
+      "event": "APPROVAL_GRANTED",
+      "task_id": "implementation",
+      "approver": "cli-user"
+    }
+  ],
+  "risks_and_limitations": [],
+  "validation": {
+    "test_artifacts": [
+      {
+        "type": "test-results",
+        "status": "PASS"
+      }
+    ]
+  },
+  "metrics": {
+    "status": "COMPLETED",
+    "duration_seconds": 2.76917,
+    "retries": 0,
+    "rollbacks": 0,
+    "replans": 0,
+    "task_failures": 0
+  }
+}
