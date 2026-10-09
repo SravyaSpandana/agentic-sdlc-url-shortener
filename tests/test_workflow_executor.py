@@ -1,5 +1,8 @@
 import pytest
 
+from orchestrator.graph import TaskDefinition, WorkflowGraph
+from orchestrator.state import WorkflowState, WorkflowStatus
+
 from agents.base import BaseAgent
 from agents.mock_agents import (
     MockArchitectureAgent,
@@ -525,3 +528,55 @@ async def test_transient_failure_exhausts_retry_limit():
         state.audit_events[-1]["failure_type"]
         == "TRANSIENT"
     )
+
+class TrackingAgent(BaseAgent):
+
+    name = "tracking-agent"
+
+    def __init__(self):
+        self.executed = False
+
+    async def execute(self, state):
+        self.executed = True
+        return {
+            "status": "COMPLETED"
+        }
+
+
+@pytest.mark.asyncio
+async def test_approval_required_task_waits_before_execution():
+
+    graph = WorkflowGraph()
+
+    graph.add_task(
+        TaskDefinition(
+            task_id="implementation",
+            agent_name="tracking-agent",
+            requires_approval=True,
+            critical=True,
+            metadata={
+                "approval_reason": "Production-impacting implementation"
+            },
+        )
+    )
+
+    agent = TrackingAgent()
+
+    executor = WorkflowExecutor(
+        graph=graph,
+        agents={
+            "tracking-agent": agent
+        },
+    )
+
+    state = WorkflowState(
+        workflow_id="approval-integration-test",
+        requirement="Build URL shortener",
+    )
+
+    result = await executor.execute(state)
+
+    assert result.status == WorkflowStatus.WAITING_FOR_APPROVAL
+    assert agent.executed is False
+    assert result.task_status["implementation"] == "WAITING_FOR_APPROVAL"
+    assert result.approvals[0]["status"] == "PENDING"

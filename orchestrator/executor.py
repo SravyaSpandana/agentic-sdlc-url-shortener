@@ -12,7 +12,9 @@ from orchestrator.state import (
     WorkflowState,
     WorkflowStatus,
 )
-
+from orchestrator.approval import ApprovalManager
+from orchestrator.policy import PolicyDecision, PolicyGuard
+from orchestrator.replanner import Replanner
 
 class WorkflowExecutor:
 
@@ -22,6 +24,9 @@ class WorkflowExecutor:
         agents: dict[str, BaseAgent],
         retry_policy: RetryPolicy | None = None,
         failure_classifier: FailureClassifier | None = None,
+        approval_manager: ApprovalManager | None = None,
+        policy_guard: PolicyGuard | None = None,
+        replanner: Replanner | None = None,
     ):
         self.graph = graph
         self.agents = agents
@@ -35,50 +40,179 @@ class WorkflowExecutor:
             failure_classifier
             or FailureClassifier()
         )
+        self.approval_manager = (
+            approval_manager or ApprovalManager()
+        )
 
-    async def execute(
-        self,
-        state: WorkflowState,
-    ) -> WorkflowState:
+        self.policy_guard = policy_guard or PolicyGuard()
+        self.replanner = replanner or Replanner()
 
+    async def execute(self, state: WorkflowState) -> WorkflowState:
         self.graph.validate()
+
+    # Recover already-completed tasks when resuming a workflow.
+        completed_tasks = {
+            task_id
+            for task_id, status in state.task_status.items()
+            if status == "COMPLETED"
+        }
 
         state.status = WorkflowStatus.RUNNING
 
-        completed_tasks: set[str] = set()
+        while len(completed_tasks) < len(self.graph.tasks):
 
-        while len(completed_tasks) < len(
-            self.graph.tasks
-        ):
-
-            ready_tasks = self.graph.get_ready_tasks(
-                completed_tasks
-            )
+            ready_tasks = self.graph.get_ready_tasks(completed_tasks)
 
             if not ready_tasks:
+                if state.status == WorkflowStatus.WAITING_FOR_APPROVAL:
+                    return state
+
                 raise RuntimeError(
                     "No tasks are ready. "
                     "Workflow may contain unresolved dependencies."
                 )
 
-            await self._execute_parallel(
-                ready_tasks,
-                state,
-            )
+            executable_tasks = []
+            waiting_for_approval = False
 
             for task in ready_tasks:
 
-                completed_tasks.add(
-                    task.task_id
+            # --------------------------------------------------
+            # 1. POLICY GATE
+            # --------------------------------------------------
+                policy_result = self.policy_guard.evaluate(
+                    task,
+                    state,
                 )
 
-                state.task_status[
-                    task.task_id
-                ] = "COMPLETED"
+                if policy_result.decision == PolicyDecision.DENY:
 
+                    state.task_status[task.task_id] = "SAFE_STOP"
+                    state.status = WorkflowStatus.SAFE_STOP
+
+                    state.audit_events.append(
+                        {
+                            "event": "POLICY_VIOLATION",
+                            "task_id": task.task_id,
+                            "reason": policy_result.reason,
+                        }
+                    )
+
+                    return state
+
+            # --------------------------------------------------
+            # 2. NORMAL TASK
+            # --------------------------------------------------
+                if not task.requires_approval:
+                    executable_tasks.append(task)
+                    continue
+
+            # --------------------------------------------------
+            # 3. APPROVAL ALREADY REJECTED
+            # --------------------------------------------------
+                if self.approval_manager.is_rejected(
+                    task.task_id,
+                    state,
+                ):
+
+                    state.task_status[task.task_id] = "BLOCKED"
+                    state.status = WorkflowStatus.BLOCKED
+
+                    state.audit_events.append(
+                        {
+                            "event": "TASK_BLOCKED",
+                            "task_id": task.task_id,
+                            "reason": "Human approval rejected",
+                        }
+                    )
+
+                    return state
+
+            # --------------------------------------------------
+            # 4. APPROVAL ALREADY GRANTED
+            # --------------------------------------------------
+                if self.approval_manager.is_approved(
+                    task.task_id,
+                    state,
+                ):
+                    executable_tasks.append(task)
+                    continue
+
+            # --------------------------------------------------
+            # 5. REQUEST HUMAN APPROVAL
+            # --------------------------------------------------
+                self.approval_manager.request_approval(
+                    task_id=task.task_id,
+                    reason=task.metadata.get(
+                        "approval_reason",
+                        "High-impact engineering action",
+                    ),
+                    state=state,
+                )
+
+                waiting_for_approval = True
+
+        # ------------------------------------------------------
+        # 6. EXECUTE ALL APPROVED / NORMAL TASKS IN PARALLEL
+        # ------------------------------------------------------
+            if executable_tasks:
+
+                await self._execute_parallel(
+                    executable_tasks,
+                    state,
+                )
+
+                for task in executable_tasks:
+
+                    completed_tasks.add(task.task_id)
+
+                    state.task_status[
+                        task.task_id
+                    ] = "COMPLETED"
+
+        # ------------------------------------------------------
+        # 7. PAUSE IF HUMAN APPROVAL IS REQUIRED
+        # ------------------------------------------------------
+            if waiting_for_approval:
+
+                state.status = (
+                    WorkflowStatus.WAITING_FOR_APPROVAL
+                )
+
+                return state
+
+    # ----------------------------------------------------------
+    # 8. WORKFLOW COMPLETED
+    # ----------------------------------------------------------
         state.status = WorkflowStatus.COMPLETED
 
         return state
+
+    async def replan_and_resume(
+        self,
+        state: WorkflowState,
+        affected_tasks: list[str],
+        reason: str,
+    ) -> WorkflowState:
+        """Invalidate stale work and resume the existing workflow."""
+
+        # Validate task IDs before modifying workflow state.
+        unknown_tasks = set(affected_tasks) - set(self.graph.tasks)
+
+        if unknown_tasks:
+            raise ValueError(
+                f"Cannot replan unknown tasks: {sorted(unknown_tasks)}"
+            )
+
+        # Invalidate affected tasks and their stale artifacts.
+        self.replanner.replan(
+            state=state,
+            affected_tasks=affected_tasks,
+            reason=reason,
+        )
+
+        # Resume using the existing state and dependency graph.
+        return await self.execute(state)
 
     async def _execute_parallel(
         self,
