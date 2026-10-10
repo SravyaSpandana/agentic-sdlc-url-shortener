@@ -9,10 +9,18 @@ from orchestrator.executor import WorkflowExecutor
 from orchestrator.state import WorkflowState, WorkflowStatus
 from scenarios.workflow_builder import ScenarioWorkflowBuilder
 
-async def run_scenario(scenario_name: str) -> int:
-    scenario, graph, agents = ScenarioWorkflowBuilder().build(
-        scenario_name
-    )
+
+async def run_scenario(
+    scenario_name: str,
+    provider: str | None = None,
+) -> int:
+    if provider is None:
+        from llm.config import load_settings
+        provider = load_settings().provider
+
+    scenario, graph, agents = ScenarioWorkflowBuilder(
+        provider=provider
+    ).build(scenario_name)
 
     state = WorkflowState(
         workflow_id=f"{scenario_name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
@@ -116,10 +124,12 @@ async def run_scenario(scenario_name: str) -> int:
         return 1
 
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run the Agentic SDLC workflow"
     )
+
     parser.add_argument(
         "--scenario",
         choices=["greenfield", "brownfield", "ambiguous"],
@@ -127,8 +137,18 @@ def main() -> int:
         help="Scenario to execute",
     )
 
+    parser.add_argument(
+        "--provider",
+        choices=["mock", "gemini"],
+        default=None,
+        help="LLM provider (defaults to LLM_PROVIDER from .env)",
+    )
+
     args = parser.parse_args()
-    return asyncio.run(run_scenario(args.scenario))
+
+    return asyncio.run(
+        run_scenario(args.scenario, args.provider)
+    )
 
 
 if __name__ == "__main__":

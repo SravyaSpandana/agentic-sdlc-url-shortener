@@ -16,6 +16,7 @@ from orchestrator.approval import ApprovalManager
 from orchestrator.policy import PolicyDecision, PolicyGuard
 from orchestrator.replanner import Replanner
 from orchestrator.metrics import WorkflowMetrics
+from orchestrator.checkpoint import CheckpointManager
 
 class WorkflowExecutor:
 
@@ -47,8 +48,9 @@ class WorkflowExecutor:
         )
 
         self.policy_guard = policy_guard or PolicyGuard()
-        self.replanner = replanner or Replanner()
+        self.replanner = replanner or Replanner(graph=self.graph)
         self.metrics = metrics or WorkflowMetrics()
+        self.checkpoint_manager = CheckpointManager()
 
     async def execute(self, state: WorkflowState) -> WorkflowState:
         self.graph.validate()
@@ -173,6 +175,14 @@ class WorkflowExecutor:
                         task.task_id
                     ] = "COMPLETED"
 
+                    # Save a consistent checkpoint after the batch completes.
+                    # Tasks in this parallel batch share the same stable snapshot.
+
+                for task in executable_tasks:
+                    self.checkpoint_manager.create(
+                        state,
+                        task.task_id,
+                    )
         # ------------------------------------------------------
         # 7. PAUSE IF HUMAN APPROVAL IS REQUIRED
         # ------------------------------------------------------
@@ -192,6 +202,18 @@ class WorkflowExecutor:
         self.metrics.finish(state.status.value)
 
         return state
+    def rollback_to_checkpoint(
+        self,
+        state: WorkflowState,
+        task_id: str,
+    ) -> WorkflowState:
+        self.checkpoint_manager.rollback(state, task_id)
+
+        # Record rollback in workflow metrics.
+        rollback_event = state.audit_events[-1]
+        self.metrics.record_event(rollback_event)
+
+        return state
 
     async def replan_and_resume(
         self,
@@ -199,24 +221,21 @@ class WorkflowExecutor:
         affected_tasks: list[str],
         reason: str,
     ) -> WorkflowState:
-        """Invalidate stale work and resume the existing workflow."""
-
-        # Validate task IDs before modifying workflow state.
         unknown_tasks = set(affected_tasks) - set(self.graph.tasks)
-
         if unknown_tasks:
             raise ValueError(
-                f"Cannot replan unknown tasks: {sorted(unknown_tasks)}"
+                f"Unknown tasks: {sorted(unknown_tasks)}"
             )
 
-        # Invalidate affected tasks and their stale artifacts.
         self.replanner.replan(
             state=state,
             affected_tasks=affected_tasks,
             reason=reason,
         )
 
-        # Resume using the existing state and dependency graph.
+        # Count the replan in workflow metrics.
+        self.metrics.record_event(state.audit_events[-1])
+
         return await self.execute(state)
 
     async def _execute_parallel(

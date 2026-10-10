@@ -76,3 +76,23 @@ class MockTestAgent(BaseAgent):
             "type": "test-results",
             "status": "PASS",
         }
+
+
+class MockRiskAnalysisAgent(BaseAgent):
+    name = "risk-analysis-agent"
+
+    async def execute(self, state):
+        await asyncio.sleep(0.1)
+        return {
+            "type": "independent-risk-analysis",
+            "risks": [
+                "URL redirect abuse",
+                "Service availability",
+                "Data retention"
+            ],
+            "mitigations": [
+                "Validate destination URLs",
+                "Monitor service health",
+                "Define a retention policy"
+            ]
+        }

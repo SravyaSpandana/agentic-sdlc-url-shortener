@@ -187,6 +187,22 @@ async def test_transient_failure_succeeds_after_retry():
         "implementation"
     ] == 1
 
+    assert state.status == WorkflowStatus.COMPLETED
+
+    # The task failed once, then recovered.
+    assert executor.metrics.retries == 1
+    assert executor.metrics.task_failures == 1
+
+    # Confirm the retry is visible in the audit trail.
+    assert any(
+        event["event"] == "TASK_FAILED"
+        for event in state.audit_events
+    )
+
+    assert any(
+        event["event"] == "TASK_RETRY"
+        for event in state.audit_events
+    )
 
 @pytest.mark.asyncio
 async def test_retry_limit_is_respected():
@@ -580,3 +596,94 @@ async def test_approval_required_task_waits_before_execution():
     assert agent.executed is False
     assert result.task_status["implementation"] == "WAITING_FOR_APPROVAL"
     assert result.approvals[0]["status"] == "PENDING"
+
+@pytest.mark.asyncio
+
+@pytest.mark.asyncio
+async def test_replan_and_resume_reruns_affected_tasks():
+    execution_counts = {
+        "requirements": 0,
+        "architecture": 0,
+        "implementation": 0,
+    }
+
+    class CountingAgent:
+        def __init__(self, name):
+            self.name = name
+
+        async def execute(self, state):
+            execution_counts[self.name] += 1
+            return {
+                "task": self.name,
+                "run": execution_counts[self.name],
+            }
+
+    graph = WorkflowGraph()
+
+    graph.add_task(
+        TaskDefinition(
+            task_id="requirements",
+            agent_name="requirements",
+        )
+    )
+    graph.add_task(
+        TaskDefinition(
+            task_id="architecture",
+            agent_name="architecture",
+            dependencies=["requirements"],
+        )
+    )
+    graph.add_task(
+        TaskDefinition(
+            task_id="implementation",
+            agent_name="implementation",
+            dependencies=["architecture"],
+        )
+    )
+
+    agents = {
+        name: CountingAgent(name)
+        for name in execution_counts
+    }
+
+    executor = WorkflowExecutor(
+        graph=graph,
+        agents=agents,
+    )
+
+    state = WorkflowState(
+        workflow_id="replan-resume-test",
+        requirement="Build URL shortener",
+    )
+
+    # Simulate a previously completed workflow.
+    for task_id in graph.tasks:
+        state.task_status[task_id] = "COMPLETED"
+        state.artifacts[task_id] = {
+            "old_result": task_id,
+        }
+
+    result = await executor.replan_and_resume(
+        state=state,
+        affected_tasks=["architecture"],
+        reason="Architecture requirements changed",
+    )
+
+    assert result.status == WorkflowStatus.COMPLETED
+
+    # Unaffected work should not execute again.
+    assert execution_counts["requirements"] == 0
+
+    # The changed task and its downstream dependent must rerun.
+    assert execution_counts["architecture"] == 1
+    assert execution_counts["implementation"] == 1
+
+    assert executor.metrics.replans == 1
+
+    assert any(
+        event["event"] == "WORKFLOW_REPLANNED"
+        for event in result.audit_events
+    )
+
+    assert result.artifacts["architecture"]["run"] == 1
+    assert result.artifacts["implementation"]["run"] == 1
