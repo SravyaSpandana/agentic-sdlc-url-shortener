@@ -3,6 +3,8 @@ from orchestrator.state import (
     WorkflowState,
     WorkflowStatus,
 )
+from orchestrator.approval import ApprovalManager
+from orchestrator.state import WorkflowState
 
 
 def test_approval_request_is_created():
@@ -125,3 +127,38 @@ def test_approving_unknown_task_fails():
             "No pending approval"
             in str(exc)
         )
+
+
+def test_reject_records_audit_event():
+
+    state = WorkflowState(
+        workflow_id="test-rejection",
+        requirement="Test approval rejection",
+    )
+    manager = ApprovalManager()
+
+    manager.request_approval(
+        task_id="implementation",
+        reason="Review proposed changes",
+        state=state,
+    )
+    manager.reject(
+        task_id="implementation",
+        state=state,
+        approver="cli-user",
+    )
+
+    approval = next(
+        item for item in state.approvals
+        if item["task_id"] == "implementation"
+    )
+    assert approval["status"] == "REJECTED"
+    assert approval["approver"] == "cli-user"
+
+    rejection_events = [
+        event for event in state.audit_events
+        if event["event"] == "APPROVAL_REJECTED"
+    ]
+    assert len(rejection_events) == 1
+    assert rejection_events[0]["task_id"] == "implementation"
+    assert rejection_events[0]["approver"] == "cli-user"

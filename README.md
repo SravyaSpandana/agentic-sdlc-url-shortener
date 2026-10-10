@@ -1,26 +1,63 @@
 # Agentic Software Engineering System — URL Shortener
 
-A runnable prototype that transforms a software requirement into a reviewable engineering workflow. It combines a FastAPI URL-shortener service with a stateful SDLC orchestrator, human approval gates, audit events, workflow metrics, and optional Gemini-powered analysis.
+A runnable prototype demonstrating how an agentic software engineering system can coordinate the software development lifecycle (SDLC), from requirements analysis and architecture planning to security review, human approval, implementation, and testing.
 
-> **Implementation boundary:** Gemini is used for requirements analysis, architecture recommendations, and design-level security review. Implementation and test agents are deterministic mocks; they do not generate or execute application code. The brownfield scenario currently models codebase/impact analysis but does not inspect repository files automatically.
+The project combines a FastAPI URL-shortener application with a stateful workflow orchestrator, configurable mock and Gemini providers, approval gates, policy enforcement, failure handling, audit events, and engineering reports.
+
+> **Implementation boundary:** Gemini can support requirements analysis, architecture recommendations, security review, and implementation proposals. The Gemini implementation path separates proposal generation from patch application and requires human approval before applying an allowed patch. The mock provider uses deterministic agents. Test-agent behavior and brownfield repository analysis have prototype limitations described below.
 
 ## Capabilities
 
-- URL creation, short-code redirects, analytics, deletion, and health endpoint using FastAPI and SQLite.
-- Explicit workflow dependency graph and validation.
-- Stateful task execution and cross-stage artifact passing.
-- Human approval before the critical implementation task.
-- Failure classification, bounded retries, policy guardrails, safe-stop, checkpoints, rollback, and downstream invalidation during replanning.
-- Audit events and workflow metrics in JSON engineering reports.
-- `greenfield`, `brownfield`, and `ambiguous` scenarios.
-- Deterministic mock mode and Gemini-backed analysis mode.
+- **URL-shortener API:** Create short URLs, redirect, track analytics, delete URLs, enforce expiration, and check service health.
+- **Workflow orchestration:** Represent SDLC activities as a dependency graph with dependency validation and cycle detection.
+- **Parallel execution:** Schedule independent ready tasks concurrently.
+- **State and context:** Maintain workflow status, task results, artifacts, retry counts, approvals, and audit events.
+- **Human-in-the-loop governance:** Pause before critical implementation actions and handle approval or rejection.
+- **Gemini implementation workflow:** Generate a reviewable patch proposal, validate the proposed changes, require approval, and apply allowed changes with backup and rollback handling.
+- **Failure handling:** Classify failures, retry eligible transient failures within configured bounds, and stop execution for policy violations.
+- **Recovery and replanning:** Support checkpoints, state restoration, and invalidation of affected downstream tasks.
+- **Observability:** Generate JSON engineering reports containing workflow results, artifacts, approvals, audit events, and available metrics.
+- **Multiple scenarios:** Support greenfield, brownfield, and ambiguous-requirements workflows.
+- **Provider flexibility:** Run deterministic mock workflows without live model calls or use Gemini-backed analysis when configured.
 
 See [docs/architecture.md](docs/architecture.md) for component diagrams, control flow, design decisions, and limitations.
 
+## Architecture
+
+The system has two main parts:
+
+1. **URL-shortener application:** FastAPI, Pydantic, SQLite, and service/repository layers.
+2. **SDLC orchestrator:** Workflow graph, state management, agent registry, approval manager, policy guard, retry/failure handling, checkpoints, replanning, metrics, and reporting.
+
+The orchestrator schedules tasks only when their dependencies are complete. Independent ready tasks can execute concurrently. Critical implementation tasks can pause the workflow for human approval.
+
+### Greenfield workflow
+
+Requirements analysis is followed by architecture and risk analysis. Security review precedes implementation.
+
+**Gemini provider:**
+
+`Requirements → Architecture and Risk Analysis → Security Review → Implementation Proposal → Human Approval → Patch Application → Tests`
+
+Architecture and risk analysis can run in parallel when their dependencies are satisfied.
+
+**Mock provider:**
+
+`Requirements → Architecture and Risk Analysis → Security Review → Human Approval → Mock Implementation → Mock Tests`
+
+The mock path is intended for reproducible demonstrations and offline testing.
+
+### Additional scenarios
+
+- **Brownfield:** Models codebase analysis, impact analysis, security review, implementation, and regression testing.
+- **Ambiguous requirements:** Models requirements analysis, ambiguity analysis, security review, implementation, and testing.
+
+The scenario definitions describe the intended workflow stages. Brownfield repository inspection and fully automated ambiguity-driven replanning are not yet end-to-end automated capabilities.
+
 ## Prerequisites
 
-- Python 3.11+
-- Google AI Studio API key only for Gemini mode: https://aistudio.google.com/apikey
+- Python 3.11 or later.
+- Google AI Studio API key for Gemini mode: https://aistudio.google.com/apikey
 
 ## Setup (Windows PowerShell)
 
@@ -33,7 +70,9 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env`. For offline mode:
+Copy `.env.example` to `.env`.
+
+For offline mock mode:
 
 ```dotenv
 LLM_PROVIDER=mock
@@ -44,19 +83,21 @@ GEMINI_MAX_RETRIES=2
 GEMINI_MAX_OUTPUT_TOKENS=1500
 ```
 
-For Gemini mode, set `LLM_PROVIDER=gemini` and supply your actual `GEMINI_API_KEY`. Never commit `.env` or expose the key. The model must be available to your API key and quota.
+For Gemini mode, set `LLM_PROVIDER=gemini` and supply your actual `GEMINI_API_KEY`. Never commit `.env` or expose the API key. Model availability, API access, and quota limits may affect live Gemini runs.
 
-## Run the URL shortener API
+## Run the URL-shortener API
 
 ```powershell
 python -m uvicorn app.main:app --reload
 ```
 
-Open `http://127.0.0.1:8000/docs` for the exact routes and schemas. Routes are defined in `app/api/routes.py`; operations include health check, URL creation, short-code redirect, analytics, and deletion.
+Open http://127.0.0.1:8000/docs for the interactive API documentation and exact request/response schemas.
+
+Routes are defined in `app/api/routes.py`; business logic and persistence are implemented in the application service and repository layers.
 
 ## Run SDLC scenarios
 
-Mock mode (reproducible, no Gemini calls):
+### Mock provider
 
 ```powershell
 python -m app.cli --scenario greenfield --provider mock
@@ -64,7 +105,11 @@ python -m app.cli --scenario brownfield --provider mock
 python -m app.cli --scenario ambiguous --provider mock
 ```
 
-Gemini-backed analysis (configure `.env` first):
+Mock mode provides deterministic behavior without requiring a live Gemini API call.
+
+### Gemini provider
+
+Configure `.env` first, then run:
 
 ```powershell
 python -m app.cli --scenario greenfield --provider gemini
@@ -72,72 +117,96 @@ python -m app.cli --scenario brownfield --provider gemini
 python -m app.cli --scenario ambiguous --provider gemini
 ```
 
-When prompted, enter `y` to approve the implementation task. Any other response rejects it. Gemini mode uses real LLM calls for requirements, architecture, and design-level security review; implementation and testing remain mocked.
+Follow the CLI approval prompt. Approving permits the implementation-apply task to proceed through its validation and patch-application logic. Rejecting the request blocks implementation and records the rejection in workflow state and reporting.
+
+Gemini availability and quota can affect these commands. Use mock mode for repeatable demonstrations and automated tests.
+
+## Implementation proposal and approval
+
+The Gemini implementation workflow separates proposing changes from applying them.
+
+1. The proposal agent produces a structured patch proposal.
+2. The proposal is saved under `artifacts/proposals/`.
+3. The CLI presents the proposed patch for human review.
+4. The approval manager records the decision.
+5. If approved, the apply agent validates the workflow identifier, allowed target files, original source contents, and expected match counts.
+6. Backups are created before patch application.
+7. Application failures trigger rollback handling and audit events.
+
+The allowlist and validation checks reduce the risk of unintended modifications. They are not a substitute for code review, isolated execution, or comprehensive security controls.
 
 ## Tests
+
+Run the full suite:
 
 ```powershell
 python -m pytest -q
 ```
 
-Focused suites:
+Run focused suites:
 
 ```powershell
 python -m pytest tests/test_workflow_builder.py -q
 python -m pytest tests/test_llm_client.py -q
+python -m pytest tests/test_implementation_apply_agent.py -q
 ```
 
-The latest result reported during development was **58 passing tests**. Re-run the suite on the final commit and update this statement if the result changes. Automated tests should not need a live Gemini API call.
+**Development test baseline:** 71 tests passed in the latest reported run. Re-run the suite after the final README and code changes to verify the final result. Automated tests should not require live Gemini API calls.
 
 ## Governance and observability
 
-- Dependencies gate task eligibility.
-- Critical implementation requires explicit human approval.
-- Transient errors can be retried within a configured bound; permanent and policy failures are handled separately.
-- Policy violations should stop unsafe execution rather than be retried as transient errors.
-- Checkpoints support state restoration; replanning invalidates affected downstream tasks.
+- Dependency checks determine task eligibility.
+- Policy checks run before task execution.
+- Critical implementation tasks require human approval.
+- Approval rejection blocks the implementation task.
+- Eligible transient failures are retried within configured limits.
+- Policy violations trigger safe-stop behavior rather than transient retries.
+- Checkpoints capture workflow state for supported restoration operations.
+- Replanning can invalidate affected downstream task results.
 - Audit events record workflow decisions and execution events where implemented.
-- Reports include workflow status, artifacts, approvals, audit events, risks/limitations, and available metrics.
-- Metrics include duration/status and retry, rollback, replan, and task-failure counters. These are prototype metrics, not production telemetry.
+- Engineering reports include status, artifacts, approvals, audit events, risks or limitations, and available metrics.
+- Metrics cover workflow status and duration, along with retry, rollback, replan, and task-failure counters where recorded.
 
-## Scenarios
+These are prototype orchestration capabilities, not a production-grade distributed workflow or observability platform.
 
-| Scenario | Purpose | Current workflow focus |
-|---|---|---|
-| `greenfield` | New URL-shortener capability | Requirements → architecture → security review → approval → implementation placeholder → test placeholder |
-| `brownfield` | Enhancement/refactor planning | Codebase-analysis placeholder → impact-analysis placeholder → security review → approval → implementation placeholder → regression-test placeholder |
-| `ambiguous` | Surface assumptions and ambiguity | Requirements → ambiguity-analysis placeholder → security review → approval → implementation placeholder → test placeholder |
+## Reports and generated artifacts
 
-The executor can schedule independent ready tasks concurrently, but the current scenario definitions are mostly sequential. Brownfield repository inspection and automated ambiguity-driven replanning are future improvements, not completed capabilities.
+CLI workflows write JSON engineering reports under `artifacts/`, using the workflow identifier in the filename.
 
-## Reports
+Implementation proposals and backups are stored in their respective artifact directories. Review these outputs when demonstrating the proposal, approval, application, and rollback lifecycle.
 
-Each CLI workflow writes a JSON engineering report under `artifacts/`, named using the workflow ID. Inspect the report for task artifacts, approvals, audit events, and metrics. Avoid including API keys or sensitive repository information in generated reports.
+Do not include API keys or sensitive repository information in generated reports. Generated reports, databases, and local configuration should not be committed unless explicitly required by the assignment.
 
 ## Security considerations
 
-- Keep keys in local environment configuration; never commit `.env`.
-- Use parameterized database queries and validate URL inputs.
-- Treat model output as untrusted; parse and validate structured responses before downstream use.
-- A model-generated security review is advisory, not a substitute for static analysis, dependency scanning, penetration testing, or human review.
-- The prototype is not hardened for public production deployment.
+- Keep API keys in local environment configuration and exclude `.env` from version control.
+- Validate URL inputs and use parameterized database operations.
+- Treat model-generated content as untrusted input.
+- Validate structured proposals and restrict patch targets before application.
+- Require human approval before applying critical implementation changes.
+- Treat model-generated security reviews as advisory, not as replacements for static analysis, dependency scanning, penetration testing, or human review.
+- Do not run this prototype as a hardened public production service.
 
 ## Limitations and trade-offs
 
-1. The implementation agent returns a deterministic mock result; it does not modify source code.
-2. The test agent returns a deterministic mock result; it does not execute tests on generated changes.
-3. Brownfield task names represent codebase/impact analysis, but repository files are not ingested automatically.
-4. Gemini security review is based on supplied requirement and architecture context, not source-code scanning.
-5. Live Gemini runs depend on API access, model availability, rate limits, and quota. Use mock mode for offline and repeatable runs.
-6. Metrics are workflow-level prototype counters, not a full SRE telemetry solution.
-7. Local SQLite and the development server are demonstration choices, not a production deployment architecture.
+1. Mock implementation and test agents provide deterministic demonstration behavior rather than a complete autonomous implementation-and-test loop.
+2. Gemini implementation proposals are constrained by the apply agent's validation rules and allowed target files.
+3. The prototype does not provide a fully isolated sandbox for applying model-generated changes.
+4. Brownfield analysis models workflow stages but does not automatically ingest and analyze the complete repository.
+5. Security review is based on supplied context and is not comprehensive source-code security scanning.
+6. Concurrent task execution and failure paths require further stress testing before production use.
+7. Metrics are workflow-level counters rather than full production telemetry.
+8. SQLite and the local development server are demonstration choices, not a production deployment architecture.
+9. Live Gemini runs depend on model availability, network access, rate limits, and API quota.
 
-## Suggested demo
+## Suggested demonstration
 
 1. Run `python -m pytest -q` and show the passing result.
-2. Run greenfield in mock mode to demonstrate reproducibility.
-3. Run greenfield in Gemini mode and show generated analysis artifacts.
-4. Demonstrate the approval prompt and explain why implementation is gated.
-5. Show the JSON report, audit events, and metrics.
-6. Explain rollback/replanning tests and candidly state the mocked implementation/testing limitations.
-7. Briefly show the brownfield and ambiguous scenarios and their current boundaries.
+2. Run the greenfield mock scenario to demonstrate deterministic execution.
+3. Run the Gemini greenfield scenario to show analysis and proposal generation.
+4. Show the proposed patch and explain the human approval gate.
+5. Demonstrate approval rejection and explain why implementation is blocked.
+6. Inspect the JSON engineering report, audit events, and metrics.
+7. Run the implementation rollback test.
+8. Explain parallel scheduling, retry behavior, policy guardrails, checkpoints, and replanning.
+9. Demonstrate brownfield and ambiguous scenarios while clearly explaining their current limitations.
