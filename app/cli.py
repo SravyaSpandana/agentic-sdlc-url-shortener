@@ -49,6 +49,24 @@ async def run_scenario(
                 print(f"  {task_id:<25} {status}")
 
             if state.status == WorkflowStatus.WAITING_FOR_APPROVAL:
+                proposal = state.artifacts.get("implementation_proposal")
+
+                if proposal:
+                    print("\n" + "=" * 60)
+                    print(" PROPOSED CODE CHANGES")
+                    print("=" * 60)
+                    print(f"Summary: {proposal.get('summary', '')}")
+
+                    edits = proposal.get("edits", [])
+                    if not edits:
+                        print("No source changes proposed.")
+
+                    for edit in edits:
+                        print(f"\nFile: {edit['path']}")
+                        print("\n--- BEFORE ---")
+                        print(edit["search"])
+                        print("\n--- AFTER ---")
+                        print(edit["replace"])
                 pending = [
                     approval
                     for approval in state.approvals
@@ -59,10 +77,9 @@ async def run_scenario(
                     print("ERROR: Workflow is waiting without a pending approval.")
                     return 1
 
+                
                 for approval in pending:
-                    print(
-                        f"\nApproval required for: {approval['task_id']}"
-                    )
+                    print(f"\nApproval required for: {approval['task_id']}")
                     print(f"Reason: {approval['reason']}")
 
                     answer = input("Approve this task? [y/N]: ").strip().lower()
@@ -86,8 +103,34 @@ async def run_scenario(
                 ):
                     state = await executor.execute(state)
 
-                    print(f"\nWorkflow status: {state.status.value}")
-                    return 1 if state.status != WorkflowStatus.COMPLETED else 0
+                    state.context["rejection"] = {
+                        "status": "REJECTED",
+                        "approvals": [
+                            {
+                                "task_id": approval["task_id"],
+                                "reason": approval["reason"],
+                                "approver": approval.get("approver", "cli-user"),
+                            }
+                            for approval in state.approvals
+                            if approval["status"] == "REJECTED"
+                        ],
+                    }
+
+                    state.context["metrics"] = executor.metrics.to_dict()
+                    report = build_engineering_report(state)
+
+                    artifacts_dir = Path("artifacts")
+                    artifacts_dir.mkdir(parents=True, exist_ok=True)
+                    report_path = artifacts_dir / f"{state.workflow_id}-report.json"
+
+                    report_path.write_text(
+                        json.dumps(report, indent=2, default=str),
+                        encoding="utf-8",
+                    )
+
+                    print("\nWorkflow status: REJECTED")
+                    print(f"Engineering report saved to: {report_path}")
+                    return 1
 
                 continue
 

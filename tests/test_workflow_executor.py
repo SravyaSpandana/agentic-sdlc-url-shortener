@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 
 from orchestrator.graph import TaskDefinition, WorkflowGraph
 from orchestrator.state import WorkflowState, WorkflowStatus
@@ -687,3 +688,75 @@ async def test_replan_and_resume_reruns_affected_tasks():
 
     assert result.artifacts["architecture"]["run"] == 1
     assert result.artifacts["implementation"]["run"] == 1
+
+def test_independent_tasks_run_in_parallel_and_synchronize():
+    async def run_test():
+        both_started = asyncio.Event()
+        started = set()
+
+        class ParallelAgent(BaseAgent):
+            def __init__(self, task_name):
+                self.task_name = task_name
+
+            async def execute(self, state):
+                started.add(self.task_name)
+
+                if len(started) == 2:
+                    both_started.set()
+
+                # Both branches must start before either can finish.
+                await asyncio.wait_for(
+                    both_started.wait(), timeout=2
+                )
+
+                return {"task": self.task_name}
+
+        class JoinAgent(BaseAgent):
+            async def execute(self, state):
+                # Both upstream artifacts must exist before this runs.
+                assert "branch_a" in state.artifacts
+                assert "branch_b" in state.artifacts
+
+                return {"synchronized": True}
+
+        graph = WorkflowGraph()
+        graph.add_task(TaskDefinition(task_id="start", agent_name="start"))
+        graph.add_task(TaskDefinition(
+            task_id="branch_a",
+            agent_name="branch_a",
+            dependencies=["start"],
+        ))
+        graph.add_task(TaskDefinition(
+            task_id="branch_b",
+            agent_name="branch_b",
+            dependencies=["start"],
+        ))
+        graph.add_task(TaskDefinition(
+            task_id="join",
+            agent_name="join",
+            dependencies=["branch_a", "branch_b"],
+        ))
+
+        class StartAgent(BaseAgent):
+            async def execute(self, state):
+                return {"ready": True}
+
+        agents = {
+            "start": StartAgent(),
+            "branch_a": ParallelAgent("branch_a"),
+            "branch_b": ParallelAgent("branch_b"),
+            "join": JoinAgent(),
+        }
+
+        state = WorkflowState(
+            workflow_id="parallel-test",
+            requirement="Verify parallel execution",
+        )
+
+        result = await WorkflowExecutor(graph, agents).execute(state)
+
+        assert result.status == WorkflowStatus.COMPLETED
+        assert started == {"branch_a", "branch_b"}
+        assert result.artifacts["join"]["synchronized"] is True
+
+    asyncio.run(run_test())

@@ -1,5 +1,5 @@
+import pytest
 from datetime import datetime, timedelta, timezone
-
 
 def test_health_check(client):
     response = client.get("/health")
@@ -217,3 +217,36 @@ def test_invalid_url_is_rejected(client):
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ["ab", "a" * 31, "my link", "a/b", "a.b", "hello!"],
+)
+def test_invalid_custom_alias_is_rejected(client, alias):
+    response = client.post(
+        "/api/v1/urls",
+        json={
+            "url": "https://www.google.com",
+            "custom_alias": alias,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ["abc", "my-link", "my_link_123", "Google123"],
+)
+def test_valid_custom_alias_is_accepted(client, alias):
+    response = client.post(
+        "/api/v1/urls",
+        json={
+            "url": "https://www.google.com",
+            "custom_alias": alias,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["short_code"] == alias

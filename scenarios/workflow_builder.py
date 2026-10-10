@@ -1,3 +1,4 @@
+
 from agents.base import BaseAgent
 from agents.mock_agents import (
     MockArchitectureAgent,
@@ -15,8 +16,12 @@ from agents.gemini_agents import (
     GeminiArchitectureAgent,
     GeminiRequirementAgent,
     GeminiSecurityAgent,
-    GeminiRiskAnalysisAgent
+    GeminiRiskAnalysisAgent,
 )
+from agents.real_agents import RealTestAgent
+from agents.implementation_proposal_agent import ImplementationProposalAgent
+from agents.implementation_apply_agent import ImplementationApplyAgent
+
 
 class ScenarioWorkflowBuilder:
     """Build a workflow graph and agent registry for a scenario."""
@@ -30,7 +35,6 @@ class ScenarioWorkflowBuilder:
 
     def build(self, scenario_name: str):
         scenario = get_scenario(scenario_name)
-
         graph = WorkflowGraph()
 
         if self.provider == "gemini":
@@ -48,10 +52,34 @@ class ScenarioWorkflowBuilder:
                 "requirement-agent": GeminiRequirementAgent(client),
                 "architecture-agent": GeminiArchitectureAgent(client),
                 "security-agent": GeminiSecurityAgent(client),
-                "implementation-agent": MockImplementationAgent(),
-                "test-agent": MockTestAgent(),
+                "implementation-proposal-agent": (
+                    ImplementationProposalAgent(client)
+                ),
+                "implementation-apply-agent": ImplementationApplyAgent(),
+                "test-agent": RealTestAgent(),
                 "risk-analysis-agent": GeminiRiskAnalysisAgent(client),
             }
+
+            implementation_tasks = [
+                TaskDefinition(
+                    task_id="implementation_proposal",
+                    agent_name="implementation-proposal-agent",
+                    dependencies=["security"],
+                ),
+                TaskDefinition(
+                    task_id="implementation",
+                    agent_name="implementation-apply-agent",
+                    dependencies=["implementation_proposal"],
+                    requires_approval=True,
+                    critical=True,
+                    metadata={
+                        "approval_reason": (
+                            "Review and approve the actual proposed patch"
+                        )
+                    },
+                ),
+            ]
+
         else:
             agents: dict[str, BaseAgent] = {
                 "requirement-agent": MockRequirementAgent(),
@@ -62,9 +90,20 @@ class ScenarioWorkflowBuilder:
                 "risk-analysis-agent": MockRiskAnalysisAgent(),
             }
 
-        # Keep your existing greenfield, brownfield, and
-        # ambiguous task definitions below this point unchanged.
-        if scenario_name == "greenfield":        
+            implementation_tasks = [
+                TaskDefinition(
+                    task_id="implementation",
+                    agent_name="implementation-agent",
+                    dependencies=["security"],
+                    requires_approval=True,
+                    critical=True,
+                    metadata={
+                        "approval_reason": "Approve implementation before execution"
+                    },
+                ),
+            ]
+
+        if scenario_name == "greenfield":
             tasks = [
                 TaskDefinition(
                     task_id="requirements",
@@ -85,24 +124,13 @@ class ScenarioWorkflowBuilder:
                     agent_name="security-agent",
                     dependencies=["architecture", "risk_analysis"],
                 ),
-                TaskDefinition(
-                    task_id="implementation",
-                    agent_name="implementation-agent",
-                    dependencies=["security"],
-                    requires_approval=True,
-                    critical=True,
-                    metadata={
-                        "approval_reason":
-                            "Approve implementation before execution"
-                    },
-                ),
+                *implementation_tasks,
                 TaskDefinition(
                     task_id="tests",
                     agent_name="test-agent",
                     dependencies=["implementation"],
                 ),
             ]
-
 
         elif scenario_name == "brownfield":
             tasks = [
@@ -120,16 +148,48 @@ class ScenarioWorkflowBuilder:
                     agent_name="security-agent",
                     dependencies=["impact_analysis"],
                 ),
-                TaskDefinition(
-                    task_id="implementation",
-                    agent_name="implementation-agent",
-                    dependencies=["security"],
-                    requires_approval=True,
-                    critical=True,
-                    metadata={
-                        "approval_reason":
-                            "Approve backward-compatible changes"
-                    },
+                *[
+                    TaskDefinition(
+                        task_id=task.task_id,
+                        agent_name=task.agent_name,
+                        dependencies=["security"]
+                        if task.task_id in {
+                            "implementation",
+                            "implementation_proposal",
+                        }
+                        and task.agent_name != "implementation-apply-agent"
+                        else task.dependencies,
+                        requires_approval=task.requires_approval,
+                        critical=task.critical,
+                        metadata=task.metadata,
+                    )
+                    if task.task_id == "implementation"
+                    and self.provider == "mock"
+                    else task
+                    for task in implementation_tasks
+                ],
+                *(
+                    [
+                        TaskDefinition(
+                            task_id="implementation_proposal",
+                            agent_name="implementation-proposal-agent",
+                            dependencies=["security"],
+                        ),
+                        TaskDefinition(
+                            task_id="implementation",
+                            agent_name="implementation-apply-agent",
+                            dependencies=["implementation_proposal"],
+                            requires_approval=True,
+                            critical=True,
+                            metadata={
+                                "approval_reason": (
+                                    "Approve backward-compatible changes"
+                                )
+                            },
+                        ),
+                    ]
+                    if self.provider == "gemini"
+                    else []
                 ),
                 TaskDefinition(
                     task_id="regression_tests",
@@ -154,17 +214,7 @@ class ScenarioWorkflowBuilder:
                     agent_name="security-agent",
                     dependencies=["ambiguity_analysis"],
                 ),
-                TaskDefinition(
-                    task_id="implementation",
-                    agent_name="implementation-agent",
-                    dependencies=["security"],
-                    requires_approval=True,
-                    critical=True,
-                    metadata={
-                        "approval_reason":
-                            "Confirm assumptions before implementation"
-                    },
-                ),
+                *implementation_tasks,
                 TaskDefinition(
                     task_id="tests",
                     agent_name="test-agent",
@@ -176,5 +226,4 @@ class ScenarioWorkflowBuilder:
             graph.add_task(task)
 
         graph.validate()
-
         return scenario, graph, agents
