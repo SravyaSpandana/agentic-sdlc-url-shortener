@@ -4,3 +4,8 @@ __pycache__/
 *.pyc
 artifacts/*.db
 .pytest_cache/
+# Generated workflow reports
+artifacts/*-report.json
+
+# Local databases
+artifacts/*.db
